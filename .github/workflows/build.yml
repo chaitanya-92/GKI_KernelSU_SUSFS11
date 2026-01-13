@@ -34,143 +34,117 @@ on:
 
 jobs:
   build-gki:
-    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ matrix.build_type }}-${{ inputs.ksu_variant }}"
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    strategy:
-      fail-fast: false
-      matrix:
-        build_type: >-
-          ${{
-            fromJSON(
-              inputs.variant == 'vTomsonek' && '["vTomsonek"]' ||
-              inputs.variant == 'TheWildJames' && '["TheWildJames"]' ||
-              inputs.variant == 'MarionKernel' && '["MarionKernel"]' ||
-              inputs.variant == 'Hakan' && '["Hakan"]' ||
-              (inputs.build_bypass && '["Normal","Bypass"]' || '["Normal"]')
-            )
-          }}
+    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
 
     steps:
-    - name: Build Summary
-      run: |
-        echo "========================================"
-        echo " Kernel Build Summary"
-        echo "========================================"
-        echo "Android Version : ${{ inputs.android_version }}"
-        echo "Kernel Version  : ${{ inputs.kernel_version }}"
-        echo "Sub Level       : ${{ inputs.sub_level }}"
-        echo "Patch Level     : ${{ inputs.os_patch_level }}"
-        echo "Build Type      : ${{ matrix.build_type }}"
-        echo "KSU Variant     : ${{ inputs.ksu_variant }}"
-        echo "========================================"
-
-    - name: Free Disk Space
-      uses: endersonmenezes/free-disk-space@v3
-      with:
-        remove_android: true
-        remove_dotnet: true
-        remove_haskell: true
-        remove_tool_cache: true
-        remove_swap: true
-
-    - name: Setup Build Environment
+    # -------------------------------------------------
+    # ENV SETUP
+    # -------------------------------------------------
+    - name: Setup Environment
       run: |
         CONFIG="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}"
         KERNEL_ROOT="$GITHUB_WORKSPACE/$CONFIG"
+
         mkdir -p "$KERNEL_ROOT"
 
-        echo "DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig" >> $GITHUB_ENV
+        echo "CONFIG=$CONFIG" >> $GITHUB_ENV
         echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
+        echo "DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig" >> $GITHUB_ENV
         echo "SUSFS4KSU=$GITHUB_WORKSPACE/susfs4ksu" >> $GITHUB_ENV
         echo "KERNEL_PATCHES=$GITHUB_WORKSPACE/kernel_patches" >> $GITHUB_ENV
-        echo "ANYKERNEL3=$GITHUB_WORKSPACE/AnyKernel3" >> $GITHUB_ENV
 
-        mkdir -p git-repo
-        curl -L https://storage.googleapis.com/git-repo-downloads/repo -o git-repo/repo
-        chmod +x git-repo/repo
+        mkdir -p $GITHUB_WORKSPACE/git-repo
+        curl -L https://storage.googleapis.com/git-repo-downloads/repo -o $GITHUB_WORKSPACE/git-repo/repo
+        chmod +x $GITHUB_WORKSPACE/git-repo/repo
         echo "$GITHUB_WORKSPACE/git-repo" >> $GITHUB_PATH
 
-    - name: Clone Dependencies
+    # -------------------------------------------------
+    # DEPENDENCIES
+    # -------------------------------------------------
+    - name: Clone dependencies
       run: |
-        git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0
-        rm -rf AnyKernel3/.git
         git clone https://github.com/WildKernels/kernel_patches.git
 
+    # -------------------------------------------------
+    # KERNEL SOURCE
+    # -------------------------------------------------
     - name: Init & Sync Kernel
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
         BRANCH="common-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
         repo init -u https://android.googlesource.com/kernel/manifest -b "$BRANCH" --depth=1
-        repo sync -c -j$(nproc) --force-sync --no-tags
+        repo sync -c -j$(nproc --all) --no-tags --force-sync
 
-    - name: Clone SUSFS
+    # -------------------------------------------------
+    # CLONE SUSFS (FIRST)
+    # -------------------------------------------------
+    - name: Clone SUSFS4KSU
       run: |
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git \
-          -b gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}
+        SUSFS_BRANCH="gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" susfs4ksu
 
-    - name: Apply SUSFS Kernel Patches
-      working-directory: ${{ env.KERNEL_ROOT }}/common
-      run: |
-        cp -r "$SUSFS4KSU/kernel_patches/fs/"* fs/
-        cp -r "$SUSFS4KSU/kernel_patches/include/linux/"* include/linux/
-        patch -p1 < "$SUSFS4KSU/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch" || true
-
-    # 🔴 MANDATORY STEP (FIXES YOUR ERROR)
+    # -------------------------------------------------
+    # 🔥 INSTALL SUSFS HEADERS (MANDATORY)
+    # -------------------------------------------------
     - name: Install SUSFS headers
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
         echo "Installing SUSFS headers..."
         mkdir -p common/include/linux
-        cp -v "$SUSFS4KSU/kernel_patches/include/linux/susfs.h" common/include/linux/
+        cp -v $SUSFS4KSU/kernel_patches/include/linux/susfs.h common/include/linux/
         ls -l common/include/linux/susfs.h
 
-    # ✅ KernelSU AFTER headers
-    - name: Add KernelSU Variant
+    # -------------------------------------------------
+    # APPLY SUSFS PATCHES
+    # -------------------------------------------------
+    - name: Apply SUSFS patches
+      working-directory: ${{ env.KERNEL_ROOT }}/common
+      run: |
+        cp $SUSFS4KSU/kernel_patches/fs/* fs/
+        cp $SUSFS4KSU/kernel_patches/include/linux/* include/linux/
+
+        patch -p1 < $SUSFS4KSU/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
+
+    # -------------------------------------------------
+    # ADD KERNELSU (AFTER SUSFS!)
+    # -------------------------------------------------
+    - name: Add KernelSU
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
         case "${{ inputs.ksu_variant }}" in
-          WKSU)
-            curl -LSs https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh | bash -s wild
+          KSU)
+            curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
             ;;
           Next)
             curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh | bash -s dev
-            ;;
-          KSU)
-            curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
             ;;
           RKSU)
             curl -LSs https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh | bash -s main
             ;;
         esac
 
-    - name: Configure Kernel
+    # -------------------------------------------------
+    # CONFIGURE DEFCONFIG
+    # -------------------------------------------------
+    - name: Configure kernel
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
-        cat >> "$DEFCONFIG" << EOF
+        cat >> "$DEFCONFIG" << 'EOF'
         CONFIG_KSU=y
         CONFIG_KSU_SUSFS=y
         CONFIG_TMPFS_XATTR=y
         CONFIG_TMPFS_POSIX_ACL=y
         EOF
 
-    - name: Build Kernel
+    # -------------------------------------------------
+    # BUILD
+    # -------------------------------------------------
+    - name: Build kernel
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
-        if [ -f build/build.sh ]; then
-          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
-        else
-          tools/bazel build //common:kernel_aarch64_dist
-        fi
+        set -ex
+        BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
-    - name: Prepare AnyKernel3
-      run: |
-        cp "$KERNEL_ROOT"/out/*/dist/Image "$ANYKERNEL3/Image" || \
-        cp "$KERNEL_ROOT"/bazel-bin/common/kernel_aarch64/Image "$ANYKERNEL3/Image"
-
-    - name: Upload AnyKernel3
-      uses: actions/upload-artifact@v4
-      with:
-        name: Kernel-${{ inputs.android_version }}-${{ inputs.kernel_version }}
-        path: AnyKernel3/**
