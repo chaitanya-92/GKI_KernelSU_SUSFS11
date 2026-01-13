@@ -18,9 +18,6 @@ on:
       ksu_variant:
         required: true
         type: string
-      ksu_commit:
-        required: false
-        type: string
       build_bypass:
         required: true
         type: boolean
@@ -30,118 +27,119 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
+
     steps:
-      # --------------------------------------------------
-      # SUMMARY
-      # --------------------------------------------------
-      - name: Build Summary
-        run: |
-          echo "Android  : ${{ inputs.android_version }}"
-          echo "Kernel   : ${{ inputs.kernel_version }}"
-          echo "Sublevel : ${{ inputs.sub_level }}"
-          echo "Patch    : ${{ inputs.os_patch_level }}"
-          echo "KSU      : ${{ inputs.ksu_variant }}"
+    # -------------------------------------------------
+    # SETUP ENV
+    # -------------------------------------------------
+    - name: Setup Build Environment
+      run: |
+        CONFIG="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}"
+        KERNEL_ROOT="$GITHUB_WORKSPACE/$CONFIG"
 
-      # --------------------------------------------------
-      # ENV SETUP
-      # --------------------------------------------------
-      - name: Setup environment
-        run: |
-          CONFIG="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}"
-          echo "CONFIG=$CONFIG" >> $GITHUB_ENV
-          echo "KERNEL_ROOT=$GITHUB_WORKSPACE/$CONFIG" >> $GITHUB_ENV
-          echo "ANYKERNEL3=$GITHUB_WORKSPACE/AnyKernel3" >> $GITHUB_ENV
-          echo "DEFCONFIG=$GITHUB_WORKSPACE/$CONFIG/common/arch/arm64/configs/gki_defconfig" >> $GITHUB_ENV
-          mkdir -p "$GITHUB_WORKSPACE/$CONFIG"
+        mkdir -p "$KERNEL_ROOT"
 
-      # --------------------------------------------------
-      # REPO TOOL
-      # --------------------------------------------------
-      - name: Install repo
-        run: |
-          mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod +x ~/bin/repo
-          echo "$HOME/bin" >> $GITHUB_PATH
+        echo "CONFIG=$CONFIG" >> $GITHUB_ENV
+        echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
+        echo "DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig" >> $GITHUB_ENV
+        echo "ANYKERNEL3=$GITHUB_WORKSPACE/AnyKernel3" >> $GITHUB_ENV
 
-      # --------------------------------------------------
-      # SYNC KERNEL
-      # --------------------------------------------------
-      - name: Sync kernel source
-        working-directory: ${{ env.KERNEL_ROOT }}
-        run: |
-          BRANCH="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
-          repo init -u https://android.googlesource.com/kernel/manifest -b common-$BRANCH --depth=1
-          repo sync -c -j$(nproc) --no-tags --force-sync
+        mkdir -p $GITHUB_WORKSPACE/git-repo
+        curl -L https://storage.googleapis.com/git-repo-downloads/repo -o $GITHUB_WORKSPACE/git-repo/repo
+        chmod +x $GITHUB_WORKSPACE/git-repo/repo
+        echo "$GITHUB_WORKSPACE/git-repo" >> $GITHUB_PATH
 
-      # --------------------------------------------------
-      # ANYKERNEL3
-      # --------------------------------------------------
-      - name: Clone AnyKernel3
-        run: |
-          git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0
-          rm -rf AnyKernel3/.git
+    # -------------------------------------------------
+    # CLONE AnyKernel3
+    # -------------------------------------------------
+    - name: Clone AnyKernel3
+      run: |
+        git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0
+        rm -rf AnyKernel3/.git
 
-      # --------------------------------------------------
-      # KERNELSU (FIXED)
-      # --------------------------------------------------
-      - name: Install KernelSU
-        working-directory: ${{ env.KERNEL_ROOT }}
-        run: |
-          case "${{ inputs.ksu_variant }}" in
-            WKSU)
-              curl -LSs https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh | bash -s wild
-              ;;
-            KSU)
-              curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-              ;;
-            Next)
-              curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh | bash -s dev
-              ;;
-          esac
+    # -------------------------------------------------
+    # SYNC KERNEL SOURCE
+    # -------------------------------------------------
+    - name: Init & Sync Kernel Source
+      working-directory: ${{ env.KERNEL_ROOT }}
+      run: |
+        BRANCH="common-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
+        repo init -u https://android.googlesource.com/kernel/manifest -b "$BRANCH" --depth=1
+        repo sync -c -j$(nproc) --no-tags --force-sync
 
-      # --------------------------------------------------
-      # LOCALVERSION (Os3)
-      # --------------------------------------------------
-      - name: Set kernel localversion
-        working-directory: ${{ env.KERNEL_ROOT }}
-        run: |
-          sed -i '/CONFIG_LOCALVERSION/d' $DEFCONFIG
-          sed -i '/CONFIG_LOCALVERSION_AUTO/d' $DEFCONFIG
-          echo 'CONFIG_LOCALVERSION="-Os3"' >> $DEFCONFIG
-          echo 'CONFIG_LOCALVERSION_AUTO=y' >> $DEFCONFIG
-          grep LOCALVERSION $DEFCONFIG
+    # -------------------------------------------------
+    # ADD KernelSU
+    # -------------------------------------------------
+    - name: Add KernelSU
+      working-directory: ${{ env.KERNEL_ROOT }}
+      run: |
+        case "${{ inputs.ksu_variant }}" in
+          WKSU)
+            curl -LSs https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh | bash -s wild
+            ;;
+          KSU)
+            curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
+            ;;
+        esac
 
-      # --------------------------------------------------
-      # REMOVE maybe-dirty
-      # --------------------------------------------------
-      - name: Disable dirty tag
-        working-directory: ${{ env.KERNEL_ROOT }}/common
-        run: |
-          sed -i 's/maybe-dirty//g' scripts/setlocalversion
-          sed -i 's/-dirty//g' scripts/setlocalversion
+    # -------------------------------------------------
+    # CONFIGURE DEFCONFIG
+    # -------------------------------------------------
+    - name: Configure Kernel
+      working-directory: ${{ env.KERNEL_ROOT }}
+      run: |
+        cat >> "$DEFCONFIG" << 'EOF'
+        CONFIG_KSU=y
+        CONFIG_TMPFS_XATTR=y
+        CONFIG_TMPFS_POSIX_ACL=y
 
-      # --------------------------------------------------
-      # BUILD
-      # --------------------------------------------------
-      - name: Build kernel
-        working-directory: ${{ env.KERNEL_ROOT }}
-        run: |
-          set -e
+        # Custom OS version
+        CONFIG_LOCALVERSION="-Os3"
+        CONFIG_LOCALVERSION_AUTO=y
+        EOF
+
+        grep LOCALVERSION "$DEFCONFIG"
+
+    # -------------------------------------------------
+    # BUILD KERNEL (FIXED)
+    # -------------------------------------------------
+    - name: Build Kernel
+      working-directory: ${{ env.KERNEL_ROOT }}
+      run: |
+        set -e
+
+        if [ -f "build/build.sh" ]; then
+          echo "Using legacy build.sh"
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+        else
+          echo "Using Bazel build (android15 / 6.6+)"
+          tools/bazel build \
+            --config=fast \
+            --lto=thin \
+            //common:kernel_aarch64_dist
+        fi
 
-      # --------------------------------------------------
-      # PACKAGE
-      # --------------------------------------------------
-      - name: Package AnyKernel3
-        run: |
-          cp $KERNEL_ROOT/out/*/dist/Image AnyKernel3/Image
+    # -------------------------------------------------
+    # COPY IMAGE TO AnyKernel3
+    # -------------------------------------------------
+    - name: Prepare AnyKernel3
+      run: |
+        if [ -f "$KERNEL_ROOT/bazel-bin/common/kernel_aarch64/Image" ]; then
+          cp "$KERNEL_ROOT/bazel-bin/common/kernel_aarch64/Image" "$ANYKERNEL3/Image"
+        elif [ -f "$KERNEL_ROOT/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" ]; then
+          cp "$KERNEL_ROOT/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" "$ANYKERNEL3/Image"
+        else
+          echo "Image not found!"
+          exit 1
+        fi
 
-      # --------------------------------------------------
-      # UPLOAD
-      # --------------------------------------------------
-      - name: Upload kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-AnyKernel3
-          path: AnyKernel3/**
+    # -------------------------------------------------
+    # UPLOAD ARTIFACT
+    # -------------------------------------------------
+    - name: Upload AnyKernel3
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-AnyKernel3
+        path: AnyKernel3/**
+        compression-level: 9
