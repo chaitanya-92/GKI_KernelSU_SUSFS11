@@ -1,157 +1,34 @@
-name: Kernel Build Process
+name: Run Kernel Build
 
 permissions:
   contents: write
   actions: write
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       android_version:
         required: true
-        type: string
+        default: android12
       kernel_version:
         required: true
-        type: string
+        default: "5.10"
       sub_level:
         required: true
-        type: string
+        default: "226"
       os_patch_level:
         required: true
-        type: string
+        default: "2024-11"
       ksu_variant:
         required: true
-        type: string
-      ksu_commit:
-        required: false
-        type: string
+        default: WKSU
 
 jobs:
-  build-gki:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
-
-    steps:
-    # -------------------------------------------------
-    # ENV SETUP
-    # -------------------------------------------------
-    - name: Setup environment
-      run: |
-        CONFIG="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}"
-        KERNEL_ROOT="$GITHUB_WORKSPACE/$CONFIG"
-
-        mkdir -p "$KERNEL_ROOT"
-
-        echo "CONFIG=$CONFIG" >> $GITHUB_ENV
-        echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
-        echo "DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig" >> $GITHUB_ENV
-        echo "SUSFS4KSU=$GITHUB_WORKSPACE/susfs4ksu" >> $GITHUB_ENV
-        echo "KERNEL_PATCHES=$GITHUB_WORKSPACE/kernel_patches" >> $GITHUB_ENV
-
-        mkdir -p $GITHUB_WORKSPACE/git-repo
-        curl -L https://storage.googleapis.com/git-repo-downloads/repo -o $GITHUB_WORKSPACE/git-repo/repo
-        chmod +x $GITHUB_WORKSPACE/git-repo/repo
-        echo "$GITHUB_WORKSPACE/git-repo" >> $GITHUB_PATH
-
-    # -------------------------------------------------
-    # DEPENDENCIES
-    # -------------------------------------------------
-    - name: Clone kernel patches
-      run: |
-        git clone https://github.com/WildKernels/kernel_patches.git
-
-    # -------------------------------------------------
-    # KERNEL SOURCE
-    # -------------------------------------------------
-    - name: Init & sync kernel source
-      working-directory: ${{ env.KERNEL_ROOT }}
-      run: |
-        BRANCH="common-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
-        repo init -u https://android.googlesource.com/kernel/manifest -b "$BRANCH" --depth=1
-        repo sync -c -j$(nproc --all) --no-tags --force-sync
-
-    # -------------------------------------------------
-    # CLONE SUSFS (FIRST)
-    # -------------------------------------------------
-    - name: Clone SUSFS4KSU
-      run: |
-        SUSFS_BRANCH="gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH" susfs4ksu
-
-    # -------------------------------------------------
-    # 🔥 INSTALL SUSFS HEADERS (MANDATORY)
-    # -------------------------------------------------
-    - name: Install SUSFS headers
-      working-directory: ${{ env.KERNEL_ROOT }}
-      run: |
-        echo "Installing SUSFS headers..."
-        mkdir -p common/include/linux
-        cp -v $SUSFS4KSU/kernel_patches/include/linux/susfs.h common/include/linux/
-        ls -l common/include/linux/susfs.h
-
-    # -------------------------------------------------
-    # APPLY SUSFS PATCHES
-    # -------------------------------------------------
-    - name: Apply SUSFS patches
-      working-directory: ${{ env.KERNEL_ROOT }}/common
-      run: |
-        cp $SUSFS4KSU/kernel_patches/fs/* fs/
-        cp $SUSFS4KSU/kernel_patches/include/linux/* include/linux/
-        patch -p1 < $SUSFS4KSU/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
-
-    # -------------------------------------------------
-    # ADD KERNELSU (AFTER SUSFS)
-    # -------------------------------------------------
-    - name: Add KernelSU
-      working-directory: ${{ env.KERNEL_ROOT }}
-      run: |
-        case "${{ inputs.ksu_variant }}" in
-          KSU)
-            curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-            ;;
-          Next)
-            curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh | bash -s dev
-            ;;
-          RKSU)
-            curl -LSs https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh | bash -s main
-            ;;
-        esac
-
-    # -------------------------------------------------
-    # 🔥 ENABLE SUSFS IN KERNELSU (CRITICAL FIX)
-    # -------------------------------------------------
-    - name: Enable SUSFS for KernelSU
-      working-directory: ${{ env.KERNEL_ROOT }}/KernelSU
-      run: |
-        cp $KERNEL_PATCHES/KernelSU/10_enable_susfs_for_ksu.patch .
-        patch -p1 < 10_enable_susfs_for_ksu.patch
-
-    # -------------------------------------------------
-    # DEFCONFIG
-    # -------------------------------------------------
-    - name: Configure kernel
-      working-directory: ${{ env.KERNEL_ROOT }}
-      run: |
-        cat >> "$DEFCONFIG" << 'EOF'
-        CONFIG_KSU=y
-        CONFIG_KSU_SUSFS=y
-        CONFIG_TMPFS_XATTR=y
-        CONFIG_TMPFS_POSIX_ACL=y
-        EOF
-
-        sed -i 's/check_defconfig//' common/build.config.gki || true
-
-    # -------------------------------------------------
-    # BUILD
-    # -------------------------------------------------
-    - name: Build kernel
-      working-directory: ${{ env.KERNEL_ROOT }}
-      run: |
-        set -ex
-        if [ -f build/build.sh ]; then
-          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
-        else
-          tools/bazel build --config=fast //common:kernel_aarch64_dist
-        fi
+  call-build:
+    uses: ./.github/workflows/build.yml
+    with:
+      android_version: ${{ inputs.android_version }}
+      kernel_version: ${{ inputs.kernel_version }}
+      sub_level: ${{ inputs.sub_level }}
+      os_patch_level: ${{ inputs.os_patch_level }}
+      ksu_variant: ${{ inputs.ksu_variant }}
