@@ -5,6 +5,33 @@ permissions:
   actions: write # Allows triggering actions
 
 on:
+  workflow_dispatch:
+    inputs:
+      ksu_variant:
+        description: "KernelSU variant (KSU / WKSU / Next / RKSU)"
+        required: true
+        default: "KSU"
+      ksu_commit:
+        description: "Optional KSU commit hash"
+        required: false
+      build_bypass:
+        description: "Enable module check bypass"
+        required: true
+        default: false
+        type: boolean
+
+  workflow_call:
+    inputs:
+      ksu_variant:
+        required: true
+        type: string
+      ksu_commit:
+        required: false
+        type: string
+      build_bypass:
+        required: true
+        type: boolean
+
   workflow_call:
     inputs:
       ksu_variant:
