@@ -1,7 +1,5 @@
 name: Kernel Build Process
-permissions:
-  contents: write
-  actions: write
+
 
 on:
   workflow_call:
