@@ -32,18 +32,6 @@ on:
         required: true
         type: boolean
 
-  workflow_call:
-    inputs:
-      ksu_variant:
-        required: true
-        type: string
-      ksu_commit:
-        required: false
-        type: string
-      build_bypass:
-        required: true
-        type: boolean
-
 jobs:
   build-kernels-a12:
     name: "5.10.${{ matrix.sub_level }}-${{ matrix.os_patch_level }}"
