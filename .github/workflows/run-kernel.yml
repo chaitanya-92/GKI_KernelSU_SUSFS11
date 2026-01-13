@@ -1,6 +1,5 @@
 name: Run Kernel Build
 
-
 permissions:
   contents: write
   actions: write
@@ -10,22 +9,22 @@ on:
     inputs:
       android_version:
         required: true
-        default: android12
+        default: android15
       kernel_version:
         required: true
-        default: "5.10"
+        default: "6.6"
       sub_level:
         required: true
-        default: "226"
+        default: "89"
       os_patch_level:
         required: true
-        default: "2024-11"
+        default: "2025-06"
       ksu_variant:
         required: true
         default: WKSU
       build_bypass:
         required: true
-        default: true
+        default: false
         type: boolean
 
 jobs:

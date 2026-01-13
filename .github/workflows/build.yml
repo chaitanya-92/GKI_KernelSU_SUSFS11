@@ -1,12 +1,10 @@
 name: Kernel Build Process
-
-
 on:
   workflow_call:
     inputs:
       android_version:
         required: true
-        type: string
+        type: string  
       kernel_version:
         required: true
         type: string
