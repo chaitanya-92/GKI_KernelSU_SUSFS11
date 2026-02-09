@@ -1,9 +1,5 @@
 name: Kernel Build Process
 
-permissions:
-  contents: write
-  actions: write
-
 on:
   workflow_call:
     inputs:
@@ -34,74 +30,76 @@ on:
 
 jobs:
   build-gki:
-    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}"
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
+
     steps:
-    # --------------------------------------------------
-    # Summary
-    # --------------------------------------------------
-    - name: Build Summary
-      run: |
-        echo "Android Version : ${{ inputs.android_version }}"
-        echo "Kernel Version  : ${{ inputs.kernel_version }}"
-        echo "Sub Level       : ${{ inputs.sub_level }}"
-        echo "Patch Level     : ${{ inputs.os_patch_level }}"
-        echo "KSU Variant     : ${{ inputs.ksu_variant }}"
-
-    # --------------------------------------------------
-    # Free disk
-    # --------------------------------------------------
-    - uses: endersonmenezes/free-disk-space@v3
-      with:
-        remove_android: true
-        remove_dotnet: true
-        remove_haskell: true
-        remove_tool_cache: true
-        remove_swap: true
-
-    # --------------------------------------------------
-    # Setup env
-    # --------------------------------------------------
+    # -------------------------------------------------
+    # ENV SETUP
+    # -------------------------------------------------
     - name: Setup Build Environment
       run: |
         CONFIG="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}"
         KERNEL_ROOT="$GITHUB_WORKSPACE/$CONFIG"
         mkdir -p "$KERNEL_ROOT"
 
-        echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
-        echo "DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig" >> $GITHUB_ENV
-        echo "ANYKERNEL3=$GITHUB_WORKSPACE/AnyKernel3" >> $GITHUB_ENV
-        echo "SUSFS4KSU=$GITHUB_WORKSPACE/susfs4ksu" >> $GITHUB_ENV
+        cat >> $GITHUB_ENV << EOF
+        CONFIG=$CONFIG
+        KERNEL_ROOT=$KERNEL_ROOT
+        DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig
+        SUSFS4KSU=$GITHUB_WORKSPACE/susfs4ksu
+        ANYKERNEL3=$GITHUB_WORKSPACE/AnyKernel3
+        EOF
 
-        mkdir -p git-repo
-        curl -L https://storage.googleapis.com/git-repo-downloads/repo -o git-repo/repo
-        chmod +x git-repo/repo
+        mkdir -p $GITHUB_WORKSPACE/git-repo
+        curl -L https://storage.googleapis.com/git-repo-downloads/repo -o $GITHUB_WORKSPACE/git-repo/repo
+        chmod +x $GITHUB_WORKSPACE/git-repo/repo
         echo "$GITHUB_WORKSPACE/git-repo" >> $GITHUB_PATH
 
-    # --------------------------------------------------
-    # Clone tools
-    # --------------------------------------------------
+    # -------------------------------------------------
+    # DEPENDENCIES
+    # -------------------------------------------------
     - name: Clone AnyKernel3
       run: |
         git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0
         rm -rf AnyKernel3/.git
 
-    # --------------------------------------------------
-    # Kernel source
-    # --------------------------------------------------
-    - name: Sync Kernel Source
+    # -------------------------------------------------
+    # KERNEL SOURCE
+    # -------------------------------------------------
+    - name: Init & Sync Kernel
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
         BRANCH="common-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
         repo init -u https://android.googlesource.com/kernel/manifest -b "$BRANCH" --depth=1
-        repo sync -c -j$(nproc) --force-sync --no-tags
+        repo sync -c -j$(nproc --all) --no-tags --force-sync
 
-    # --------------------------------------------------
-    # KernelSU
-    # --------------------------------------------------
-    - name: Apply KernelSU
+    # -------------------------------------------------
+    # SUSFS (FIRST)
+    # -------------------------------------------------
+    - name: Clone SUSFS4KSU
+      run: |
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}
+
+    - name: Install SUSFS headers (MANDATORY)
+      working-directory: ${{ env.KERNEL_ROOT }}
+      run: |
+        mkdir -p common/include/linux
+        cp -v $SUSFS4KSU/kernel_patches/include/linux/susfs.h common/include/linux/
+
+    - name: Apply SUSFS patches
+      working-directory: ${{ env.KERNEL_ROOT }}/common
+      run: |
+        cp $SUSFS4KSU/kernel_patches/fs/* fs/
+        cp $SUSFS4KSU/kernel_patches/include/linux/* include/linux/
+        patch -p1 < $SUSFS4KSU/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
+
+    # -------------------------------------------------
+    # KERNELSU (AFTER SUSFS)
+    # -------------------------------------------------
+    - name: Add KernelSU
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
         case "${{ inputs.ksu_variant }}" in
@@ -111,60 +109,72 @@ jobs:
           KSU)
             curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
             ;;
+          Next)
+            curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh | bash -s dev
+            ;;
+          RKSU)
+            curl -LSs https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh | bash -s main
+            ;;
         esac
 
-    # --------------------------------------------------
-    # SUSFS (CLEAN, ONCE)
-    # --------------------------------------------------
-    - name: Apply SUSFS
+    # -------------------------------------------------
+    # DEFCONFIG
+    # -------------------------------------------------
+    - name: Configure kernel options
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}
+        cat >> "$DEFCONFIG" << 'EOF'
+        CONFIG_KSU=y
+        CONFIG_KSU_SUSFS=y
+        CONFIG_TMPFS_XATTR=y
+        CONFIG_TMPFS_POSIX_ACL=y
+        EOF
 
-        cd common
-        mkdir -p include/linux
-        cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
-        cp ../susfs4ksu/kernel_patches/fs/* fs/
-
-        PATCH="50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch"
-        if [ -f "../susfs4ksu/kernel_patches/$PATCH" ]; then
-          patch -p1 < "../susfs4ksu/kernel_patches/$PATCH"
-        fi
-
-    # --------------------------------------------------
-    # Kernel version fix
-    # --------------------------------------------------
-    - name: Fix Kernel Version
+    # -------------------------------------------------
+    # CUSTOM VERSION STRING
+    # -------------------------------------------------
+    - name: Set custom OS version
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
-        sed -i 's/CONFIG_LOCALVERSION_AUTO=y/CONFIG_LOCALVERSION_AUTO=n/' $DEFCONFIG || true
-        echo 'CONFIG_LOCALVERSION="-Os3-g80a"' >> $DEFCONFIG
-        sed -i 's/-dirty//g' common/scripts/setlocalversion
-        sed -i 's/-maybe-dirty//g' build/kernel/kleaf/impl/stamp.bzl || true
+        sed -i '/CONFIG_LOCALVERSION/d' $DEFCONFIG
+        sed -i '/CONFIG_LOCALVERSION_AUTO/d' $DEFCONFIG
 
-    # --------------------------------------------------
-    # Build
-    # --------------------------------------------------
-    - name: Build Kernel
+        echo 'CONFIG_LOCALVERSION="-Os3"' >> $DEFCONFIG
+        echo 'CONFIG_LOCALVERSION_AUTO=y' >> $DEFCONFIG
+
+        grep LOCALVERSION $DEFCONFIG
+
+    # -------------------------------------------------
+    # REMOVE maybe-dirty SAFELY
+    # -------------------------------------------------
+    - name: Disable dirty detection
+      working-directory: ${{ env.KERNEL_ROOT }}/common
+      run: |
+        sed -i 's/-dirty//g' scripts/setlocalversion
+        sed -i 's/maybe-dirty//g' scripts/setlocalversion
+
+    # -------------------------------------------------
+    # BUILD
+    # -------------------------------------------------
+    - name: Build kernel
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
-        if [ -f build/build.sh ]; then
-          BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
-        else
-          tools/bazel build //common:kernel_aarch64_dist
-        fi
+        set -ex
+        BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
-    # --------------------------------------------------
-    # AnyKernel3
-    # --------------------------------------------------
+    # -------------------------------------------------
+    # PACKAGE
+    # -------------------------------------------------
     - name: Prepare AnyKernel3
       run: |
-        cp $KERNEL_ROOT/bazel-bin/common/kernel_aarch64/Image $ANYKERNEL3/Image
+        if [ -f "$KERNEL_ROOT/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" ]; then
+          cp "$KERNEL_ROOT/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" "$ANYKERNEL3/Image"
+        else
+          cp "$KERNEL_ROOT/bazel-bin/common/kernel_aarch64/Image" "$ANYKERNEL3/Image"
+        fi
 
-    # --------------------------------------------------
-    # Upload
-    # --------------------------------------------------
-    - uses: actions/upload-artifact@v4
+    - name: Upload AnyKernel3
+      uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ inputs.kernel_version }}-${{ inputs.android_version }}-AnyKernel3
-        path: AnyKernel3/**
+        name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-AnyKernel3"
+        path: ./AnyKernel3/**
