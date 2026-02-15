@@ -118,31 +118,31 @@ jobs:
         esac
 
     # -------------------------------------------------
-    # DEFCONFIG
-    # -------------------------------------------------
-    - name: Configure kernel options
-      working-directory: ${{ env.KERNEL_ROOT }}
-      run: |
-        cat >> "$DEFCONFIG" << 'EOF'
-        CONFIG_KSU=y
-        CONFIG_KSU_SUSFS=y
-        CONFIG_TMPFS_XATTR=y
-        CONFIG_TMPFS_POSIX_ACL=y
-        EOF
+# DEFCONFIG
+# -------------------------------------------------
+- name: Configure kernel options
+  working-directory: ${{ env.KERNEL_ROOT }}
+  run: |
+    cat >> "$DEFCONFIG" << 'EOF'
+    CONFIG_KSU=y
+    CONFIG_KSU_SUSFS=y
+    CONFIG_TMPFS_XATTR=y
+    CONFIG_TMPFS_POSIX_ACL=y
+    EOF
 
-    # -------------------------------------------------
-    # CUSTOM VERSION STRING
-    # -------------------------------------------------
-    - name: Set custom OS version
-      working-directory: ${{ env.KERNEL_ROOT }}
-      run: |
-        sed -i '/CONFIG_LOCALVERSION/d' $DEFCONFIG
-        sed -i '/CONFIG_LOCALVERSION_AUTO/d' $DEFCONFIG
+# -------------------------------------------------
+# CUSTOM VERSION STRING
+# -------------------------------------------------
+- name: Set custom kernel name
+  working-directory: ${{ env.KERNEL_ROOT }}
+  run: |
+    sed -i '/CONFIG_LOCALVERSION/d' $DEFCONFIG
+    sed -i '/CONFIG_LOCALVERSION_AUTO/d' $DEFCONFIG
 
-        echo 'CONFIG_LOCALVERSION="-Os3"' >> $DEFCONFIG
-        echo 'CONFIG_LOCALVERSION_AUTO=y' >> $DEFCONFIG
+    echo 'CONFIG_LOCALVERSION="-ChaitanyaKSU"' >> $DEFCONFIG
+    echo 'CONFIG_LOCALVERSION_AUTO=n' >> $DEFCONFIG
 
-        grep LOCALVERSION $DEFCONFIG
+    grep LOCALVERSION $DEFCONFIG
 
     # -------------------------------------------------
     # REMOVE maybe-dirty SAFELY
